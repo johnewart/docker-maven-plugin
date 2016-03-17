@@ -29,6 +29,7 @@ import com.spotify.docker.client.AnsiProgressHandler;
 import com.spotify.docker.client.DockerClient;
 import com.spotify.docker.client.DockerClient.BuildParam;
 import com.spotify.docker.client.ProgressHandler;
+import com.spotify.docker.client.messages.AuthConfig;
 import com.spotify.docker.client.messages.ProgressMessage;
 
 import org.apache.maven.execution.MavenSession;
@@ -167,6 +168,23 @@ public class BuildMojoTest extends AbstractMojoTestCase {
 
     assertEquals("wrong dockerfile contents", GENERATED_DOCKERFILE_WITH_VOLUMES,
                  Files.readAllLines(Paths.get("target/docker/Dockerfile"), UTF_8));
+  }
+
+  public void testBuildFromECR() throws Exception {
+      final File pom = getTestFile("src/test/resources/pom-ecr-login.xml");
+      assertNotNull("Null pom.xml", pom);
+      assertTrue("pom.xml does not exist", pom.exists());
+
+      final BuildMojo mojo = setupMojo(pom);
+      final DockerClient docker = mock(DockerClient.class);
+      mojo.execute(docker);
+
+      verify(docker).auth(any(AuthConfig.class));
+
+      verify(docker).build(eq(Paths.get("target/docker")),
+              eq("ecr-test"),
+              any(AnsiProgressHandler.class),
+                           any(BuildParam.class));
   }
 
   public void testBuildWithDockerLabels() throws Exception {

@@ -207,6 +207,12 @@
       <version>4.1.6.RELEASE</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk</artifactId>
+      <version>1.10.60</version>
+    </dependency>
+
   </dependencies>
 
   <build>

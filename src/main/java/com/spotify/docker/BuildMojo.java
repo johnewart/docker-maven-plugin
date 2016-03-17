@@ -21,6 +21,15 @@
 
 package com.spotify.docker;
 
+import com.amazonaws.ClientConfiguration;
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.AWSCredentialsProviderChain;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.services.ecr.AmazonECRClient;
+import com.amazonaws.services.ecr.model.AuthorizationData;
+import com.amazonaws.services.ecr.model.GetAuthorizationTokenRequest;
+import com.amazonaws.services.ecr.model.GetAuthorizationTokenResult;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Joiner;
@@ -34,6 +43,7 @@ import com.google.common.collect.Sets;
 import com.spotify.docker.client.AnsiProgressHandler;
 import com.spotify.docker.client.DockerClient;
 import com.spotify.docker.client.DockerException;
+import com.spotify.docker.client.messages.AuthConfig;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigException;
 import com.typesafe.config.ConfigFactory;
@@ -50,6 +60,7 @@ import org.codehaus.plexus.component.configurator.expression.ExpressionEvaluatio
 import org.codehaus.plexus.util.DirectoryScanner;
 import org.codehaus.plexus.util.FileUtils;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.glassfish.jersey.internal.util.Base64;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -342,6 +353,36 @@ public class BuildMojo extends AbstractDockerMojo {
       resource.setDirectory(dockerDirectory);
       resources.add(resource);
       copyResources(destination);
+    }
+
+    /**
+     * Login with AWS ECR if needed and pass the auth token on to the docker client
+     */
+    if (baseImage != null && baseImage.contains("ecr.us-east-1.amazonaws.com")) {
+      final String[] parts = baseImage.split("\\.");
+      if (parts.length > 0) {
+        final String registryAccountId = parts[0];
+        final AmazonECRClient ecrClient = new AmazonECRClient();
+        final GetAuthorizationTokenRequest request = new GetAuthorizationTokenRequest();
+        request.setRegistryIds(ImmutableList.of(registryAccountId));
+        final GetAuthorizationTokenResult result = ecrClient.getAuthorizationToken(request);
+
+        if (result != null) {
+          final List<AuthorizationData> authData = result.getAuthorizationData();
+          if (authData != null && authData.size() > 0) {
+            AuthConfig.Builder authBuilder = AuthConfig.builder();
+            final String token = authData.get(0).getAuthorizationToken();
+            final String[] authParams = Base64.decodeAsString(token).split(":");
+            if (authParams.length == 2) {
+              final String username = authParams[0].trim();
+              final String password = authParams[1].trim();
+              authBuilder.username(username);
+              authBuilder.password(password);
+              docker.auth(authBuilder.build());
+            }
+          }
+        }
+      }
     }
 
     buildImage(docker, destination, buildParams());
