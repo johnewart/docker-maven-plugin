@@ -21,13 +21,21 @@
 
 package com.spotify.docker;
 
+import com.amazonaws.services.ecr.AmazonECRClient;
+import com.amazonaws.services.ecr.model.AuthorizationData;
+import com.amazonaws.services.ecr.model.GetAuthorizationTokenRequest;
+import com.amazonaws.services.ecr.model.GetAuthorizationTokenResult;
+import com.google.common.collect.ImmutableList;
 import com.spotify.docker.client.AnsiProgressHandler;
 import com.spotify.docker.client.DockerClient;
 import com.spotify.docker.client.DockerException;
 import com.spotify.docker.client.ProgressHandler;
+import com.spotify.docker.client.messages.AuthConfig;
 import com.spotify.docker.client.messages.ProgressMessage;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
+import org.apache.maven.plugin.logging.SystemStreamLog;
+import org.glassfish.jersey.internal.util.Base64;
 
 import java.io.IOException;
 import java.util.List;
@@ -42,6 +50,7 @@ public class Utils {
 
   public static final String PUSH_FAIL_WARN_TEMPLATE = "Failed to push %s,"
           + " retrying in %d seconds (%d/%d).";
+  public static final String ECR_SUBSTRING = "ecr.us-east-1.amazonaws.com";
 
   public static String[] parseImageName(String imageName) throws MojoExecutionException {
     if (isNullOrEmpty(imageName)) {
@@ -80,7 +89,13 @@ public class Utils {
 
       try {
         log.info("Pushing " + imageName);
-        docker.push(imageName, handler);
+
+        if (imageHostedInECR(imageName)) {
+          docker.push(imageName, handler, generateAuthConfigForECR(imageName));
+        } else {
+          docker.push(imageName, handler);
+        }
+
         // A concurrent push raises a generic DockerException and not
         // the more logical ImagePushFailedException. Hence the rather
         // wide catch clause.
@@ -116,9 +131,14 @@ public class Utils {
                                          + " docker-maven-client's plugin configuration");
       }
       for (final String imageTag : imageTags) {
-       final String imageNameWithTag = imageName + ":" + imageTag;
-       log.info("Pushing " + imageName + ":" + imageTag);
-       docker.push(imageNameWithTag, new AnsiProgressHandler());
+        final String imageNameWithTag = imageName + ":" + imageTag;
+        log.info("Pushing " + imageName + ":" + imageTag);
+        if (imageHostedInECR(imageName)) {
+          docker.push(imageNameWithTag, new AnsiProgressHandler(),
+                      generateAuthConfigForECR(imageName));
+        } else {
+          docker.push(imageNameWithTag, new AnsiProgressHandler());
+        }
       }
   }
   
@@ -129,6 +149,47 @@ public class Utils {
       Files.createDirectories(imageInfoPath.getParent());
     }
     Files.write(imageInfoPath, buildInfo.toJsonBytes());
+  }
+
+  public static boolean imageHostedInECR(String imageName) {
+    return imageName.contains(ECR_SUBSTRING);
+  }
+
+  public static AuthConfig generateAuthConfigForECR(String imageName) {
+    SystemStreamLog log = new SystemStreamLog();
+    final String[] parts = imageName.split("\\.");
+    if (parts.length > 0) {
+      final String registryAccountId = parts[0];
+      log.info("Getting ECR token for account id: " + registryAccountId);
+      final AmazonECRClient ecrClient = new AmazonECRClient();
+      final GetAuthorizationTokenRequest request = new GetAuthorizationTokenRequest();
+      request.setRegistryIds(ImmutableList.of(registryAccountId));
+      final GetAuthorizationTokenResult result = ecrClient.getAuthorizationToken(request);
+      final String serverAddress =
+              "https://" + registryAccountId + ".dkr.ecr.us-east-1.amazonaws.com/v2";
+
+      if (result != null) {
+        log.info("Retrieved ECR token!");
+        final List<AuthorizationData> authData = result.getAuthorizationData();
+        if (authData != null && authData.size() > 0) {
+          AuthConfig.Builder authBuilder = AuthConfig.builder();
+          final String token = authData.get(0).getAuthorizationToken();
+          log.debug("ECR token: " + token);
+          final String[] authParams = Base64.decodeAsString(token).split(":");
+          if (authParams.length == 2) {
+            final String username = authParams[0].trim();
+            final String password = authParams[1].trim();
+            log.info("Retrieved data: " + username + " / " + password);
+            authBuilder.username(username);
+            authBuilder.password(password);
+            authBuilder.serverAddress(serverAddress);
+            return authBuilder.build();
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
   private static class DigestExtractingProgressHandler implements ProgressHandler {

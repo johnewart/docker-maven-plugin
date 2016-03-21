@@ -83,10 +83,7 @@ import static com.google.common.base.CharMatcher.WHITESPACE;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.Lists.newArrayList;
 import static com.google.common.collect.Ordering.natural;
-import static com.spotify.docker.Utils.parseImageName;
-import static com.spotify.docker.Utils.pushImage;
-import static com.spotify.docker.Utils.pushImageTag;
-import static com.spotify.docker.Utils.writeImageInfoFile;
+import static com.spotify.docker.Utils.*;
 import static com.typesafe.config.ConfigRenderOptions.concise;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Collections.emptyList;
@@ -355,36 +352,6 @@ public class BuildMojo extends AbstractDockerMojo {
       copyResources(destination);
     }
 
-    /**
-     * Login with AWS ECR if needed and pass the auth token on to the docker client
-     */
-    if (baseImage != null && baseImage.contains("ecr.us-east-1.amazonaws.com")) {
-      final String[] parts = baseImage.split("\\.");
-      if (parts.length > 0) {
-        final String registryAccountId = parts[0];
-        final AmazonECRClient ecrClient = new AmazonECRClient();
-        final GetAuthorizationTokenRequest request = new GetAuthorizationTokenRequest();
-        request.setRegistryIds(ImmutableList.of(registryAccountId));
-        final GetAuthorizationTokenResult result = ecrClient.getAuthorizationToken(request);
-
-        if (result != null) {
-          final List<AuthorizationData> authData = result.getAuthorizationData();
-          if (authData != null && authData.size() > 0) {
-            AuthConfig.Builder authBuilder = AuthConfig.builder();
-            final String token = authData.get(0).getAuthorizationToken();
-            final String[] authParams = Base64.decodeAsString(token).split(":");
-            if (authParams.length == 2) {
-              final String username = authParams[0].trim();
-              final String password = authParams[1].trim();
-              authBuilder.username(username);
-              authBuilder.password(password);
-              docker.auth(authBuilder.build());
-            }
-          }
-        }
-      }
-    }
-
     buildImage(docker, destination, buildParams());
     tagImage(docker, forceTags);
 
@@ -599,8 +566,20 @@ public class BuildMojo extends AbstractDockerMojo {
   private void buildImage(final DockerClient docker, final String buildDir,
                           final DockerClient.BuildParam... buildParams)
       throws MojoExecutionException, DockerException, IOException, InterruptedException {
+
     getLog().info("Building image " + imageName);
-    docker.build(Paths.get(buildDir), imageName, new AnsiProgressHandler(), buildParams);
+
+    /**
+     * Login with AWS ECR if needed and pass the auth token on to the docker client
+     */
+    if (baseImage != null && Utils.imageHostedInECR(baseImage)) {
+      docker.build(Paths.get(buildDir), imageName, null,
+                   new AnsiProgressHandler(), Utils.generateAuthConfigForECR(baseImage),
+                   buildParams);
+    } else {
+      docker.build(Paths.get(buildDir), imageName, new AnsiProgressHandler(), buildParams);
+    }
+
     getLog().info("Built " + imageName);
   }
 
